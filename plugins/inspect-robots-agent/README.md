@@ -410,6 +410,96 @@ them, while fractional effort is accepted today only by Tinker's
 OpenAI-compatible endpoint (see below). A server that takes levels only rejects
 a fraction with a guided 4xx naming the wire that does accept one.
 
+## Custom tools
+
+Python callers can pass `tools=` to `LLMAgentPolicy` to give the model tools
+that answer in text without moving the robot. Each is a `CustomTool` with a
+`name`, a `description`, a JSON Schema object for its `parameters` (the OpenAI
+function format the built-in tools use), and a `run` callable. `run` receives
+the arguments as the model sent them and the observation the model is looking
+at, and returns the text the model reads as the tool result. The schema is
+shown to the model and not enforced, so `run` checks its own arguments.
+
+A custom call does not end the turn, so the model can ask a question and act
+on the answer in one message: `[locate_points, move_to]` runs both. A custom
+call after the motion call, or after `take_pic`, is ignored. A turn of custom
+calls alone goes back to the model with the answers.
+
+Here is a tool that turns pixels in a calibrated overhead camera into points
+on the table, by intersecting each pixel's ray with a horizontal plane:
+
+```python
+import numpy as np
+
+from inspect_robots_agent import CustomTool, LLMAgentPolicy, ToolError
+
+K = np.array([[546.0, 0.0, 240.0], [0.0, 546.0, 240.0], [0.0, 0.0, 1.0]])
+# The camera's pose in the base frame, OpenCV axes: here straight down from 0.6 m.
+CAM_TO_BASE = np.array(
+    [[1.0, 0.0, 0.0, 0.2], [0.0, -1.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.6], [0.0, 0.0, 0.0, 1.0]]
+)
+
+
+def locate_points(arguments, observation):
+    points, height = arguments.get("points"), arguments.get("height")
+    if not isinstance(height, (int, float)):
+        raise ToolError("height must be a number")
+    if not isinstance(points, list) or not all(
+        isinstance(p, list) and len(p) == 2 and all(isinstance(c, (int, float)) for c in p)
+        for p in points
+    ):
+        raise ToolError("points must be a list of [u, v] pairs")
+    origin, rotation = CAM_TO_BASE[:3, 3], CAM_TO_BASE[:3, :3]
+    lines = []
+    for u, v in points:
+        ray = rotation @ np.linalg.solve(K, [u, v, 1.0])
+        if ray[2] >= 0:
+            raise ToolError(f"pixel ({u}, {v}) looks above the horizon")
+        x, y, z = origin + (height - origin[2]) / ray[2] * ray
+        lines.append(f"({u}, {v}) -> x {x:.3f}, y {y:.3f}, z {z:.3f}")
+    return "\n".join(lines)
+
+
+policy = LLMAgentPolicy(
+    tools=[
+        CustomTool(
+            name="locate_points",
+            description=(
+                "Base-frame positions, in metres, of pixels in the top camera, "
+                "on a horizontal plane at the given height."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "points": {
+                        "type": "array",
+                        "items": {"type": "array", "items": {"type": "number"}},
+                        "description": "Pixels as [u, v] pairs.",
+                    },
+                    "height": {
+                        "type": "number",
+                        "description": "Plane height in metres; 0 is the table.",
+                    },
+                },
+                "required": ["points", "height"],
+            },
+            run=locate_points,
+        )
+    ]
+)
+```
+
+Raise `ToolError` to reject the arguments: the model reads the message and
+can correct the call. A rejection counts toward the same three-in-a-row
+failure budget as other tool errors, and a successful custom call does not
+reset it. Any other exception propagates and fails the trial, as does a
+result that is not a string. Names follow `[a-zA-Z0-9_-]{1,64}`, and the
+built-in names are reserved whether or not that tool is bound. Keep schemas
+to the keywords the built-ins use (`type`, `properties`, `items`, `required`,
+`description`, `enum`), which every wire accepts. Like `pre_check`, tools are
+programmatic-only; the recorded config lists each as `name=module.qualname`
+of its `run`.
+
 ## Depth rendering
 
 For each camera, the policy looks for metric depth in

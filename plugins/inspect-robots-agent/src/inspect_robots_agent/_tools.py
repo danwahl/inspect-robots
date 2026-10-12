@@ -56,6 +56,33 @@ _HINDSIGHT_DESCRIPTION = (
 PreCheck = Callable[[npt.NDArray[np.float64]], str | None]
 
 
+#: Every name a built-in tool may take, reserved whether or not it is bound.
+BUILTIN_TOOL_NAMES = frozenset({"move_to", "move_joints", "move_by", "done", "give_up", "take_pic"})
+
+
+class ToolError(Exception):
+    """Raised by a custom tool to return its message to the model as a correctable error."""
+
+
+@dataclass(frozen=True)
+class CustomTool:
+    """A tool that answers the model in text without moving the robot.
+
+    ``parameters`` is the JSON Schema object for the arguments, in the OpenAI
+    function format the built-in tools use; it is shown to the model and not
+    enforced. ``run`` receives the arguments as the model sent them and the
+    observation the model is looking at, and returns the text the model reads.
+    It raises [`ToolError`][inspect_robots_agent.ToolError] to reject its
+    arguments. Any other exception propagates, and a result that is not a
+    string raises ``TypeError``.
+    """
+
+    name: str
+    description: str
+    parameters: dict[str, Any]
+    run: Callable[[dict[str, Any], Observation], str]
+
+
 class ToolsetError(Exception):
     """An action space / observation space this toolset cannot drive."""
 
@@ -99,6 +126,7 @@ class Toolset:
         images: str = "always",
         cameras: tuple[str, ...] = (),
         pre_check: PreCheck | None = None,
+        tools: tuple[CustomTool, ...] = (),
     ):
         self._absolute = absolute
         self._pose = pose
@@ -122,6 +150,7 @@ class Toolset:
         self._images = images
         self._cameras = cameras
         self._pre_check = pre_check
+        self._tools = {tool.name: tool for tool in tools}
         if absolute:
             self._positive_limits = np.zeros_like(high)
             self._negative_limits = np.zeros_like(low)
@@ -297,7 +326,23 @@ class Toolset:
                     },
                 }
             )
+        schemas.extend(
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                },
+            }
+            for tool in self._tools.values()
+        )
         return schemas
+
+    @property
+    def custom_names(self) -> frozenset[str]:
+        """Names of the custom tools this toolset dispatches."""
+        return frozenset(self._tools)
 
     def execute(self, call: Any, observation: Observation) -> ToolResult:
         """Turn one tool call into an action chunk or an error string for the LLM."""
@@ -311,12 +356,29 @@ class Toolset:
             return self._stop(call.name, arguments, observation)
         if call.name == "take_pic" and self._images == "on_demand":
             return self._take_pic(arguments, observation)
+        if call.name in self._tools:
+            return self._custom(self._tools[call.name], arguments, observation)
         if call.name != self._move_tool:
             available = f"{self._move_tool}, done, give_up"
             if self._images == "on_demand":
                 available += ", take_pic"
+            for name in self._tools:
+                available += f", {name}"
             return ToolResult(error=f"unknown tool {call.name!r}; available: {available}")
         return self._move(arguments, observation)
+
+    def _custom(
+        self, tool: CustomTool, arguments: dict[str, Any], observation: Observation
+    ) -> ToolResult:
+        try:
+            text = tool.run(arguments, observation)
+        except ToolError as error:
+            return ToolResult(error=f"{tool.name}: {error}")
+        if not isinstance(text, str):
+            raise TypeError(
+                f"custom tool {tool.name!r} run returned {type(text).__name__}, not str"
+            )
+        return ToolResult(note=text)
 
     def residual(
         self, target: npt.NDArray[np.float64], observation: Observation
@@ -570,6 +632,7 @@ def build_toolset(
     max_speed_frac: float = 0.1,
     images: str = "always",
     pre_check: PreCheck | None = None,
+    tools: tuple[CustomTool, ...] = (),
 ) -> Toolset:
     """Validate an embodiment's spaces and build its agent-facing tools.
 
@@ -740,4 +803,5 @@ def build_toolset(
         images=images,
         cameras=tuple(camera.name for camera in observation_space.cameras),
         pre_check=pre_check,
+        tools=tools,
     )

@@ -16,9 +16,10 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,7 +56,13 @@ from inspect_robots_agent._llm import (
 )
 from inspect_robots_agent._png import png_data_url
 from inspect_robots_agent._responses import ResponsesClient
-from inspect_robots_agent._tools import PreCheck, Toolset, build_toolset
+from inspect_robots_agent._tools import (
+    BUILTIN_TOOL_NAMES,
+    CustomTool,
+    PreCheck,
+    Toolset,
+    build_toolset,
+)
 
 from ._capture import WireCapture, _safe
 
@@ -162,9 +169,62 @@ _PRE_CHECK_PROMPT_CLAUSE = (
     "rather than repeating a rejected move."
 )
 
+_TOOL_NAME = re.compile(r"[a-zA-Z0-9_-]{1,64}")
+
+_CUSTOM_TOOLS_PROMPT_CLAUSE = (
+    " The tools {names} answer in text without moving the robot; call them alone or "
+    "before the motion call in the same turn."
+)
+
 _ON_DEMAND_NUDGE = (
     "Respond with one motion tool call, one motion followed by take_pic, or take_pic alone."
 )
+
+
+def _callable_identity(hook: object) -> str:
+    """Name a callable by module and qualified name, falling back to its type's."""
+    module = getattr(hook, "__module__", None)
+    qualname = getattr(hook, "__qualname__", None)
+    if module is not None and qualname is not None:
+        return f"{module}.{qualname}"
+    hook_type = type(hook)
+    return f"{getattr(hook_type, '__module__', None)}.{getattr(hook_type, '__qualname__', None)}"
+
+
+def _validated_tools(tools: object) -> tuple[CustomTool, ...]:
+    """Return the custom tools as a tuple, else raise a guided ``ConfigError``."""
+    if isinstance(tools, (str, bytes)) or not isinstance(tools, Sequence):
+        raise ConfigError(
+            f"tools must be a sequence of CustomTool, got {tools!r}.\n"
+            "fix: -P CLI flags cannot carry tools; pass them programmatically"
+        )
+    seen: set[str] = set()
+    for tool in tools:
+        if not isinstance(tool, CustomTool):
+            raise ConfigError(f"tools must contain CustomTool instances, got {tool!r}")
+        if not isinstance(tool.name, str) or not _TOOL_NAME.fullmatch(tool.name):
+            raise ConfigError(
+                f"custom tool name {tool.name!r} must match [a-zA-Z0-9_-]{{1,64}}, "
+                "the strictest provider rule"
+            )
+        if tool.name in BUILTIN_TOOL_NAMES:
+            raise ConfigError(
+                f"custom tool name {tool.name!r} is reserved for a built-in tool; "
+                f"reserved: {', '.join(sorted(BUILTIN_TOOL_NAMES))}"
+            )
+        if tool.name in seen:
+            raise ConfigError(f"custom tool name {tool.name!r} is given twice")
+        seen.add(tool.name)
+        if not isinstance(tool.parameters, dict) or tool.parameters.get("type") != "object":
+            raise ConfigError(
+                f"custom tool {tool.name!r} parameters must be a JSON Schema object "
+                '({"type": "object", ...})'
+            )
+        if not isinstance(tool.description, str):
+            raise ConfigError(f"custom tool {tool.name!r} description must be a string")
+        if not callable(tool.run):
+            raise ConfigError(f"custom tool {tool.name!r} run must be callable")
+    return tuple(tools)
 
 
 def _validated_effort(effort: object) -> str | float:
@@ -298,6 +358,8 @@ class AgentPolicyConfig(PolicyConfig):
     prior_learnings_sha256: str | None = None
     #: Best-effort module and qualified-name identity of the motion pre-check.
     pre_check: str | None = None
+    #: One ``name=module.qualname`` entry per custom tool, identifying its ``run``.
+    tools: tuple[str, ...] = ()
     max_retries: int = 3
     backoff_s: float = 1.0
 
@@ -349,6 +411,7 @@ class LLMAgentPolicy(PolicyBase):
         transport: httpx.BaseTransport | None = None,
         env: dict[str, str] | None = None,
         pre_check: PreCheck | None = None,
+        tools: Sequence[CustomTool] = (),
         service_tier: str | None = None,
         max_retries: int = 3,
         backoff_s: float = 1.0,
@@ -414,15 +477,9 @@ class LLMAgentPolicy(PolicyBase):
                     "fix: -P CLI flags cannot carry callables; the pre_check hook is "
                     "programmatic-only"
                 )
-            module = getattr(pre_check, "__module__", None)
-            qualname = getattr(pre_check, "__qualname__", None)
-            if module is not None and qualname is not None:
-                pre_check_identity = f"{module}.{qualname}"
-            else:
-                hook_type = type(pre_check)
-                type_module = getattr(hook_type, "__module__", None)
-                type_qualname = getattr(hook_type, "__qualname__", None)
-                pre_check_identity = f"{type_module}.{type_qualname}"
+            pre_check_identity = _callable_identity(pre_check)
+
+        custom_tools = _validated_tools(tools)
 
         if not np.isfinite(max_speed_frac) or max_speed_frac <= 0:
             raise ConfigError("max_speed_frac must be finite and > 0")
@@ -775,6 +832,7 @@ class LLMAgentPolicy(PolicyBase):
         self._image_horizon = resolved_image_horizon
         self._prior_learnings_text = prior_learnings_text
         self._pre_check = pre_check
+        self._tools = custom_tools
         self._explicit_base_url = bool(base_url)
         self._wire = wire
         self.config = AgentPolicyConfig(
@@ -799,6 +857,7 @@ class LLMAgentPolicy(PolicyBase):
             prior_learnings=prior_learnings_path,
             prior_learnings_sha256=prior_learnings_sha256,
             pre_check=pre_check_identity,
+            tools=tuple(f"{tool.name}={_callable_identity(tool.run)}" for tool in custom_tools),
         )
         # Placeholder until bind(); eval() always binds before compat/rollout.
         self.info = PolicyInfo(name="agent", action_space=Box(shape=(1,)))
@@ -826,6 +885,7 @@ class LLMAgentPolicy(PolicyBase):
             self._max_speed_frac,
             images=self._images,
             pre_check=self._pre_check,
+            tools=self._tools,
         )
         self._toolset = toolset
         self._state_labels = toolset.state_labels()
@@ -851,6 +911,10 @@ class LLMAgentPolicy(PolicyBase):
         formatted = template.format(name=self._embodiment_name, budget=self._max_llm_calls)
         if self._pre_check is not None:
             formatted += _PRE_CHECK_PROMPT_CLAUSE
+        if self._tools:
+            formatted += _CUSTOM_TOOLS_PROMPT_CLAUSE.format(
+                names=", ".join(tool.name for tool in self._tools)
+            )
         docs = self._embodiment_docs
         if docs is not None and docs.strip():
             formatted = formatted + "\n\nEmbodiment notes:\n" + docs.strip()
@@ -1191,6 +1255,8 @@ class LLMAgentPolicy(PolicyBase):
                     result_text = "ignored: the trial ends with this call"
                 elif closed_after_failure:
                     result_text = "ignored: an earlier call in this turn failed"
+                elif call.name in toolset.custom_names:
+                    result_text = f"ignored: call {call.name} before the motion or take_pic"
                 else:
                     result_text = "ignored: one tool call per turn"
 

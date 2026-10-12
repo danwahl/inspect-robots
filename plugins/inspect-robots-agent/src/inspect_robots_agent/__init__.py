@@ -37,6 +37,7 @@ from inspect_robots_agent._llm import (
 )
 from inspect_robots_agent._png import encode_png, png_data_url
 from inspect_robots_agent._responses import ResponsesClient
+from inspect_robots_agent._tools import CustomTool, ToolError
 from inspect_robots_agent.policy import AgentPolicyConfig, LLMAgentPolicy, agent_policy
 
 __all__ = [
@@ -45,11 +46,13 @@ __all__ = [
     "AnthropicClient",
     "AssistantMessage",
     "ChatClient",
+    "CustomTool",
     "GeminiLiveClient",
     "InteractionsClient",
     "LLMAgentPolicy",
     "Provider",
     "ResponsesClient",
+    "ToolError",
     "agent_policy",
     "encode_png",
     "png_data_url",
