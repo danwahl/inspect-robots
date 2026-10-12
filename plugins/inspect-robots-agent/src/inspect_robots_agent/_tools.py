@@ -13,6 +13,7 @@ Broken observations still raise, and unsupported configurations fail at build
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 from collections.abc import Callable
@@ -57,7 +58,13 @@ PreCheck = Callable[[npt.NDArray[np.float64]], str | None]
 
 
 #: Every name a built-in tool may take, reserved whether or not it is bound.
-BUILTIN_TOOL_NAMES = frozenset({"move_to", "move_joints", "move_by", "done", "give_up", "take_pic"})
+BUILTIN_TOOL_NAMES = frozenset(
+    {"move_to", "move_joints", "move_by", "plan_to", "plan_joints", "plan_by"}
+    | {"done", "give_up", "take_pic"}
+)
+
+#: The dry-run tool beside each motion tool.
+_PLAN_TOOLS = {"move_to": "plan_to", "move_joints": "plan_joints", "move_by": "plan_by"}
 
 
 class ToolError(Exception):
@@ -85,9 +92,6 @@ class CustomTool:
 
 class ToolsetError(Exception):
     """An action space / observation space this toolset cannot drive."""
-
-
-_PLAN_ONLY_FACT = "plan_only checks a motion without moving the robot."
 
 
 @dataclass(frozen=True, eq=False)
@@ -130,7 +134,7 @@ class Toolset:
         cameras: tuple[str, ...] = (),
         pre_check: PreCheck | None = None,
         tools: tuple[CustomTool, ...] = (),
-        plan_only: bool = False,
+        plan_tool: bool = False,
     ):
         self._absolute = absolute
         self._pose = pose
@@ -155,7 +159,7 @@ class Toolset:
         self._cameras = cameras
         self._pre_check = pre_check
         self._tools = {tool.name: tool for tool in tools}
-        self._plan_only = plan_only
+        self._plan_tool = _PLAN_TOOLS[self._move_tool] if plan_tool else None
         if absolute:
             self._positive_limits = np.zeros_like(high)
             self._negative_limits = np.zeros_like(low)
@@ -239,24 +243,17 @@ class Toolset:
                 ),
             },
         }
-        if self._plan_only:
-            properties["plan_only"] = {
-                "type": "boolean",
-                "description": (
-                    "If true, check this motion as if to run it and report the result "
-                    "without moving the robot."
-                ),
-            }
+        parameters = {
+            "type": "object",
+            "properties": properties,
+            "required": [values_key, "note"],
+        }
         move = {
             "type": "function",
             "function": {
                 "name": self._move_tool,
                 "description": move_description,
-                "parameters": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": [values_key, "note"],
-                },
+                "parameters": parameters,
             },
         }
         done = {
@@ -302,6 +299,19 @@ class Toolset:
             },
         }
         schemas = [move, done, give_up]
+        if self._plan_tool is not None:
+            plan = {
+                "type": "function",
+                "function": {
+                    "name": self._plan_tool,
+                    "description": (
+                        f"Check a {self._move_tool} motion as if to run it and report the "
+                        "result without moving the robot. Takes the same arguments."
+                    ),
+                    "parameters": copy.deepcopy(parameters),
+                },
+            }
+            schemas.insert(1, plan)
         if self._images == "on_demand":
             schemas.append(
                 {
@@ -371,8 +381,13 @@ class Toolset:
             return self._take_pic(arguments, observation)
         if call.name in self._tools:
             return self._custom(self._tools[call.name], arguments, observation)
+        if call.name == self._plan_tool:
+            return self._move(arguments, observation, plan=True)
         if call.name != self._move_tool:
-            available = f"{self._move_tool}, done, give_up"
+            available = self._move_tool
+            if self._plan_tool is not None:
+                available += f", {self._plan_tool}"
+            available += ", done, give_up"
             if self._images == "on_demand":
                 available += ", take_pic"
             for name in self._tools:
@@ -385,15 +400,10 @@ class Toolset:
         """The motion tool's name."""
         return self._move_tool
 
-    def is_plan(self, call: Any) -> bool:
-        """Whether ``call`` is a motion call with ``plan_only`` set."""
-        if not self._plan_only or call.name != self._move_tool:
-            return False
-        try:
-            arguments = json.loads(call.arguments)
-        except (TypeError, ValueError):
-            return False
-        return isinstance(arguments, dict) and arguments.get("plan_only") is True
+    @property
+    def plan_tool(self) -> str | None:
+        """The dry-run tool's name, or None when it is not offered."""
+        return self._plan_tool
 
     def _custom(
         self, tool: CustomTool, arguments: dict[str, Any], observation: Observation
@@ -488,7 +498,9 @@ class Toolset:
             )
         return ToolResult(capture=tuple(requested))
 
-    def _move(self, arguments: dict[str, Any], observation: Observation) -> ToolResult:
+    def _move(
+        self, arguments: dict[str, Any], observation: Observation, *, plan: bool = False
+    ) -> ToolResult:
         current: npt.NDArray[np.float64] | None = None
         if self._absolute:
             # A broken sensor must end the trial before any argument
@@ -503,13 +515,6 @@ class Toolset:
             return ToolResult(
                 error=("note is required: describe what you observe and why you chose this motion")
             )
-
-        plan = arguments.get("plan_only", False)
-        if not isinstance(plan, bool):
-            return ToolResult(error=f"plan_only must be true or false, got {plan!r}")
-        if plan and not self._plan_only:
-            # Running a motion the model asked only to check would move the robot unasked.
-            return ToolResult(error=f"plan_only is not available on {self._move_tool} here")
 
         values_key = "targets" if self._absolute else "deltas"
         values = arguments.get(values_key)
@@ -544,16 +549,17 @@ class Toolset:
             result = self._move_displacement(vector, named_indices)
         if plan:
             return self._plan(result)
-        if self._plan_only and result.error is not None:
-            return ToolResult(error=f"{result.error.rstrip().rstrip('.')}. {_PLAN_ONLY_FACT}")
+        if self._plan_tool is not None and result.error is not None:
+            fact = f"{self._plan_tool} checks a motion without moving the robot."
+            return ToolResult(error=f"{result.error.rstrip().rstrip('.')}. {fact}")
         return result
 
     def _plan(self, result: ToolResult) -> ToolResult:
         """Report a motion's outcome as text, without its chunk."""
         if result.chunk is None:
-            return ToolResult(note=f"plan_only: this motion would be refused: {result.error}")
+            return ToolResult(note=f"this motion would be refused: {result.error}")
         steps = len(result.chunk)
-        note = f"plan_only: {self._move_tool} would run over {steps} steps"
+        note = f"{self._move_tool} would run over {steps} steps"
         if self._hz is not None:
             note += f" ({steps / self._hz:.1f}s)"
         if result.target is not None:
@@ -690,7 +696,7 @@ def build_toolset(
     images: str = "always",
     pre_check: PreCheck | None = None,
     tools: tuple[CustomTool, ...] = (),
-    plan_only: bool = False,
+    plan_tool: bool = False,
 ) -> Toolset:
     """Validate an embodiment's spaces and build its agent-facing tools.
 
@@ -862,5 +868,5 @@ def build_toolset(
         cameras=tuple(camera.name for camera in observation_space.cameras),
         pre_check=pre_check,
         tools=tools,
-        plan_only=plan_only,
+        plan_tool=plan_tool,
     )
