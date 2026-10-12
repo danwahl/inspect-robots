@@ -49,6 +49,7 @@ from inspect_robots_agent._llm import ChatClient, resolve_provider
 from inspect_robots_agent._png import encode_png
 from inspect_robots_agent._tools import ToolResult
 from inspect_robots_agent.policy import (
+    _MAX_CONSECUTIVE_FAILURES,
     _ON_DEMAND_SYSTEM_TEMPLATE,
     _PRIOR_LEARNINGS_TEXT_LIMIT,
     _SYSTEM_TEMPLATE,
@@ -791,6 +792,25 @@ def test_system_prompts_announce_the_hindsight_question(template: str) -> None:
     )
 
     assert announcement in rendered
+
+
+@pytest.mark.parametrize("template", [_SYSTEM_TEMPLATE, _ON_DEMAND_SYSTEM_TEMPLATE])
+def test_system_prompts_state_the_failure_limit(template: str) -> None:
+    assert template.endswith(
+        f" {_MAX_CONSECUTIVE_FAILURES} failed turns without a successful motion between them "
+        "end the trial; a turn fails on a tool error or a reply with no tool call."
+    )
+
+
+def test_the_stated_failure_limit_is_the_enforced_one() -> None:
+    bad = _tool_response("move_joints", {"targets": {"elbow": 0.1}})
+    script = _Script([bad, _text_response("thinking"), bad])
+    policy = _policy(script)
+    policy.bind(_AbsoluteEmbodiment().info)
+    policy.reset(Scene(id="s0", instruction="reach"))
+    with pytest.raises(RuntimeError):
+        policy.act(Observation(state={"q": np.array([0.0])}, instruction="reach"))
+    assert len(script.requests) == _MAX_CONSECUTIVE_FAILURES
 
 
 def test_reset_before_bind_uses_the_unchanged_unbound_prompt() -> None:

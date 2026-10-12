@@ -125,7 +125,8 @@ _PRIOR_LEARNINGS_TEXT_LIMIT = 32 * 1024
 # Native action units: 0.1 mm for eef_pos, 0.1 mrad for joints.
 _TARGET_REACHED_TOLERANCE = 1e-4
 
-_SYSTEM_TEMPLATE = """You are controlling a real robot embodiment named {name!r} \
+_SYSTEM_TEMPLATE = (
+    """You are controlling a real robot embodiment named {name!r} \
 through tool calls. Each observation message gives you the current \
 proprioceptive state and camera images. Work toward the user's goal in \
 small, deliberate motions; re-check the observation after every motion. \
@@ -140,9 +141,13 @@ Respond with exactly one tool call per turn. When the goal is achieved call \
 done; if it cannot be achieved call give_up. Note what you are learning about \
 this rig and task as you go: done and give_up will ask what you wish you had \
 known from the start. You have a budget of \
-{budget} LLM calls for the whole trial."""
+{budget} LLM calls for the whole trial. """
+    f"{_MAX_CONSECUTIVE_FAILURES} failed turns without a successful motion between them end "
+    "the trial; a turn fails on a tool error or a reply with no tool call."
+)
 
-_ON_DEMAND_SYSTEM_TEMPLATE = """You are controlling a real robot embodiment named {name!r} \
+_ON_DEMAND_SYSTEM_TEMPLATE = (
+    """You are controlling a real robot embodiment named {name!r} \
 through tool calls. Each observation message gives you the current \
 proprioceptive state. Camera images are not attached automatically; call \
 `take_pic` to see them. A camera already shown for the current observation \
@@ -162,7 +167,10 @@ how much actually played. Placed alone, it looks before you decide what motion \
 to make. When the goal is achieved call done; if it cannot be achieved call \
 give_up. Note what you are learning about this rig and task as you go: done and \
 give_up will ask what you wish you had known from the start. You have a budget \
-of {budget} LLM calls for the whole trial."""
+of {budget} LLM calls for the whole trial. """
+    f"{_MAX_CONSECUTIVE_FAILURES} failed turns without a successful motion between them end "
+    "the trial; a turn fails on a tool error or a reply with no tool call."
+)
 
 _PRE_CHECK_PROMPT_CLAUSE = (
     " A motion pre-check may reject a move with a stated reason. Adjust the target "
