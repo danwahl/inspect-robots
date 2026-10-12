@@ -61,12 +61,16 @@ In `Toolset._move`, after the call is parsed:
   under `plan_only`: they are mistakes in the call, not facts about the motion.
 - Otherwise the motion is built as usual and `_plan` turns the result into a
   note without a chunk:
-  - refused: `plan_only: this motion would be refused: <the error a real call
-    returns>`;
+  - refused: `plan_only: this motion would be refused: <the refusal a real call
+    returns, without the plan_only sentence>`;
   - accepted: `plan_only: {tool} would run over N steps (Xs), ending at
     label=value, ...`. The ending names every dimension, unnamed ones filled
     from the current state. Displacement modes have no absolute target and
     omit it.
+- A motion refused without `plan_only` (bounds, cap, `pre_check`, or a delta
+  too small to step) appends one sentence to its error when the option is on: "plan_only checks a motion
+  without moving the robot." It states that the option exists, without
+  suggesting a target. Malformed calls fail earlier and do not get it.
 
 ### 4.4 Turn loop
 
@@ -97,6 +101,8 @@ and custom-tool clauses:
 - A refused plan (pre-check and bounds) is a note, not an error.
 - Malformed calls and a non-bool flag stay errors; `plan_only: false` runs.
 - `plan_only: true` is an error when not offered.
+- A refused real motion ends with the plan_only sentence only when offered,
+  and a malformed call does not.
 - A displacement plan reports steps and duration without an ending.
 - `is_plan` reads the flag on the motion tool only.
 - Turn loop: `[plan, move]` runs both; four refused plans then a move do not

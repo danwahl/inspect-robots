@@ -517,6 +517,8 @@ A plan does not end the turn, so `[move_to with plan_only, move_to]` runs
 both. A plan after the motion call or `take_pic` is ignored. A refused plan
 is not a tool error and does not count toward the three-in-a-row failure
 budget; a malformed call (an unknown dimension, a missing note) still does.
+With the option on, a refused motion's error ends "plan_only checks a
+motion without moving the robot."
 Without the option, a call that sets `plan_only` to true is refused rather
 than run. `[plan, motion]` calls `pre_check` once for each.
 

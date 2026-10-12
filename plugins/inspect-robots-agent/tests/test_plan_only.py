@@ -107,6 +107,24 @@ def test_a_refused_plan_is_a_note_not_an_error() -> None:
     assert bounds.note.startswith("plan_only: this motion would be refused: target for joint")
 
 
+def test_a_refused_motion_mentions_plan_only_when_offered() -> None:
+    call = _move(targets={"joint": 0.9})
+    offered = _toolset(plan_only=True, pre_check=_reject_past_half).execute(call, _obs())
+    assert offered.error == (
+        "pre-check rejected this motion: joint past 0.5. "
+        "plan_only checks a motion without moving the robot."
+    )
+    plain = _toolset(pre_check=_reject_past_half).execute(call, _obs())
+    assert plain.error == "pre-check rejected this motion: joint past 0.5"
+    toolset = _toolset(plan_only=True, pre_check=lambda waypoints: "joint past 0.5.\n")
+    assert toolset.execute(call, _obs()).error == (
+        "pre-check rejected this motion: joint past 0.5. "
+        "plan_only checks a motion without moving the robot."
+    )
+    malformed = _toolset(plan_only=True).execute(_move(targets={"elbow": 0.1}), _obs())
+    assert malformed.error is not None and "plan_only" not in malformed.error
+
+
 def test_malformed_calls_stay_errors_under_plan_only() -> None:
     toolset = _toolset(plan_only=True)
     assert toolset.execute(_move(targets={"elbow": 0.1}, plan_only=True), _obs()).error

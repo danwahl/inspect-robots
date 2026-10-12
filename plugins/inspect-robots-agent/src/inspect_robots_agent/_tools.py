@@ -87,6 +87,9 @@ class ToolsetError(Exception):
     """An action space / observation space this toolset cannot drive."""
 
 
+_PLAN_ONLY_FACT = "plan_only checks a motion without moving the robot."
+
+
 @dataclass(frozen=True, eq=False)
 class ToolResult:
     """The policy-relevant effects of one validated tool call.
@@ -539,7 +542,11 @@ class Toolset:
             result = self._move_absolute(values, vector, named_indices, current)
         else:
             result = self._move_displacement(vector, named_indices)
-        return self._plan(result) if plan else result
+        if plan:
+            return self._plan(result)
+        if self._plan_only and result.error is not None:
+            return ToolResult(error=f"{result.error.rstrip().rstrip('.')}. {_PLAN_ONLY_FACT}")
+        return result
 
     def _plan(self, result: ToolResult) -> ToolResult:
         """Report a motion's outcome as text, without its chunk."""
