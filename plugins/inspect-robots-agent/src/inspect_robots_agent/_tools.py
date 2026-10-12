@@ -127,6 +127,7 @@ class Toolset:
         cameras: tuple[str, ...] = (),
         pre_check: PreCheck | None = None,
         tools: tuple[CustomTool, ...] = (),
+        plan_only: bool = False,
     ):
         self._absolute = absolute
         self._pose = pose
@@ -151,6 +152,7 @@ class Toolset:
         self._cameras = cameras
         self._pre_check = pre_check
         self._tools = {tool.name: tool for tool in tools}
+        self._plan_only = plan_only
         if absolute:
             self._positive_limits = np.zeros_like(high)
             self._negative_limits = np.zeros_like(low)
@@ -216,6 +218,32 @@ class Toolset:
                 "step count. Unnamed dimensions do not move. " + self._bounds_text
             )
             values_key = "deltas"
+        properties: dict[str, Any] = {
+            values_key: {
+                "type": "object",
+                "description": (
+                    "Map of dimension name to value. Valid names: " + ", ".join(self._labels)
+                ),
+            },
+            "note": {
+                "type": "string",
+                "description": (
+                    "What you observe right now in the observation (images, if any, "
+                    "and state), and why you chose this motion. The user reads these "
+                    "notes live and in the saved transcript to follow what you see "
+                    "and what you decide. Write for them, in one or two plain "
+                    "sentences."
+                ),
+            },
+        }
+        if self._plan_only:
+            properties["plan_only"] = {
+                "type": "boolean",
+                "description": (
+                    "If true, check this motion as if to run it and report the result "
+                    "without moving the robot."
+                ),
+            }
         move = {
             "type": "function",
             "function": {
@@ -223,25 +251,7 @@ class Toolset:
                 "description": move_description,
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        values_key: {
-                            "type": "object",
-                            "description": (
-                                "Map of dimension name to value. Valid names: "
-                                + ", ".join(self._labels)
-                            ),
-                        },
-                        "note": {
-                            "type": "string",
-                            "description": (
-                                "What you observe right now in the observation (images, if any, "
-                                "and state), and why you chose this motion. The user reads these "
-                                "notes live and in the saved transcript to follow what you see "
-                                "and what you decide. Write for them, in one or two plain "
-                                "sentences."
-                            ),
-                        },
-                    },
+                    "properties": properties,
                     "required": [values_key, "note"],
                 },
             },
@@ -367,6 +377,21 @@ class Toolset:
             return ToolResult(error=f"unknown tool {call.name!r}; available: {available}")
         return self._move(arguments, observation)
 
+    @property
+    def move_tool(self) -> str:
+        """The motion tool's name."""
+        return self._move_tool
+
+    def is_plan(self, call: Any) -> bool:
+        """Whether ``call`` is a motion call with ``plan_only`` set."""
+        if not self._plan_only or call.name != self._move_tool:
+            return False
+        try:
+            arguments = json.loads(call.arguments)
+        except (TypeError, ValueError):
+            return False
+        return isinstance(arguments, dict) and arguments.get("plan_only") is True
+
     def _custom(
         self, tool: CustomTool, arguments: dict[str, Any], observation: Observation
     ) -> ToolResult:
@@ -476,6 +501,13 @@ class Toolset:
                 error=("note is required: describe what you observe and why you chose this motion")
             )
 
+        plan = arguments.get("plan_only", False)
+        if not isinstance(plan, bool):
+            return ToolResult(error=f"plan_only must be true or false, got {plan!r}")
+        if plan and not self._plan_only:
+            # Running a motion the model asked only to check would move the robot unasked.
+            return ToolResult(error=f"plan_only is not available on {self._move_tool} here")
+
         values_key = "targets" if self._absolute else "deltas"
         values = arguments.get(values_key)
         if not isinstance(values, dict) or not values:
@@ -504,8 +536,26 @@ class Toolset:
 
         if self._absolute:
             assert current is not None
-            return self._move_absolute(values, vector, named_indices, current)
-        return self._move_displacement(vector, named_indices)
+            result = self._move_absolute(values, vector, named_indices, current)
+        else:
+            result = self._move_displacement(vector, named_indices)
+        return self._plan(result) if plan else result
+
+    def _plan(self, result: ToolResult) -> ToolResult:
+        """Report a motion's outcome as text, without its chunk."""
+        if result.chunk is None:
+            return ToolResult(note=f"plan_only: this motion would be refused: {result.error}")
+        steps = len(result.chunk)
+        note = f"plan_only: {self._move_tool} would run over {steps} steps"
+        if self._hz is not None:
+            note += f" ({steps / self._hz:.1f}s)"
+        if result.target is not None:
+            ending = ", ".join(
+                f"{label}={float(value):.4g}"
+                for label, value in zip(self._labels, result.target, strict=True)
+            )
+            note += f", ending at {ending}"
+        return ToolResult(note=note)
 
     def _move_absolute(
         self,
@@ -633,6 +683,7 @@ def build_toolset(
     images: str = "always",
     pre_check: PreCheck | None = None,
     tools: tuple[CustomTool, ...] = (),
+    plan_only: bool = False,
 ) -> Toolset:
     """Validate an embodiment's spaces and build its agent-facing tools.
 
@@ -804,4 +855,5 @@ def build_toolset(
         cameras=tuple(camera.name for camera in observation_space.cameras),
         pre_check=pre_check,
         tools=tools,
+        plan_only=plan_only,
     )

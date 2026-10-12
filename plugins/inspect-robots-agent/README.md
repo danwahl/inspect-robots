@@ -283,7 +283,8 @@ Configuration knobs (all `-P key=value`): `model`, `base_url`, `api_key_env`,
 `temperature`, `effort`, `max_speed_frac`, `transcript_echo`, `images`
 (default `always`; use `on_demand` for model-requested frames; `inspect-robots setup` suggests `on_demand`),
 `image_horizon`, `depth` (default `render`; use `off` to omit depth
-renders), and `prior_learnings`.
+renders), `prior_learnings`, and `plan_only` (default `false`; see
+[Planning a motion](#planning-a-motion)).
 `speed` and `max_output_tokens` apply to `-P wire=messages` only, and passing
 either on another wire is an error. `speed=fast` is meaningful only for Claude
 on Anthropic's API; Tinker accepts and silently ignores it.
@@ -499,6 +500,25 @@ to the keywords the built-ins use (`type`, `properties`, `items`, `required`,
 `description`, `enum`), which every wire accepts. Like `pre_check`, tools are
 programmatic-only; the recorded config lists each as `name=module.qualname`
 of its `run`.
+
+## Planning a motion
+
+`LLMAgentPolicy(plan_only=True)`, or `-P plan_only=true`, gives the motion
+tool an optional `plan_only` flag. A call with it set runs every check a real
+call runs (bounds, the per-step cap, `pre_check`) and answers in text without
+moving the robot:
+
+```
+plan_only: move_to would run over 23 steps (2.3s), ending at x=0.2, y=0, z=0.06, ...
+plan_only: this motion would be refused: pre-check rejected this motion: ...
+```
+
+A plan does not end the turn, so `[move_to with plan_only, move_to]` runs
+both. A plan after the motion call or `take_pic` is ignored. A refused plan
+is not a tool error and does not count toward the three-in-a-row failure
+budget; a malformed call (an unknown dimension, a missing note) still does.
+Without the option, a call that sets `plan_only` to true is refused rather
+than run. `[plan, motion]` calls `pre_check` once for each.
 
 ## Depth rendering
 

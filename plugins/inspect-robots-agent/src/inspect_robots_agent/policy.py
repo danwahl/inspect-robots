@@ -176,6 +176,11 @@ _CUSTOM_TOOLS_PROMPT_CLAUSE = (
     "before the motion call in the same turn."
 )
 
+_PLAN_ONLY_PROMPT_CLAUSE = (
+    " With plan_only set, {move} checks the motion as if to run it and reports the result "
+    "without moving the robot; call it alone or before the motion call in the same turn."
+)
+
 _ON_DEMAND_NUDGE = (
     "Respond with one motion tool call, one motion followed by take_pic, or take_pic alone."
 )
@@ -360,6 +365,8 @@ class AgentPolicyConfig(PolicyConfig):
     pre_check: str | None = None
     #: One ``name=module.qualname`` entry per custom tool, identifying its ``run``.
     tools: tuple[str, ...] = ()
+    #: Whether the motion tool offers ``plan_only`` dry runs.
+    plan_only: bool = False
     max_retries: int = 3
     backoff_s: float = 1.0
 
@@ -412,6 +419,7 @@ class LLMAgentPolicy(PolicyBase):
         env: dict[str, str] | None = None,
         pre_check: PreCheck | None = None,
         tools: Sequence[CustomTool] = (),
+        plan_only: bool = False,
         service_tier: str | None = None,
         max_retries: int = 3,
         backoff_s: float = 1.0,
@@ -480,6 +488,10 @@ class LLMAgentPolicy(PolicyBase):
             pre_check_identity = _callable_identity(pre_check)
 
         custom_tools = _validated_tools(tools)
+        if not isinstance(plan_only, bool):
+            raise ConfigError(
+                f"plan_only must be true or false, got {plan_only!r}.\nfix: pass -P plan_only=true"
+            )
 
         if not np.isfinite(max_speed_frac) or max_speed_frac <= 0:
             raise ConfigError("max_speed_frac must be finite and > 0")
@@ -833,6 +845,7 @@ class LLMAgentPolicy(PolicyBase):
         self._prior_learnings_text = prior_learnings_text
         self._pre_check = pre_check
         self._tools = custom_tools
+        self._plan_only = plan_only
         self._explicit_base_url = bool(base_url)
         self._wire = wire
         self.config = AgentPolicyConfig(
@@ -858,6 +871,7 @@ class LLMAgentPolicy(PolicyBase):
             prior_learnings_sha256=prior_learnings_sha256,
             pre_check=pre_check_identity,
             tools=tuple(f"{tool.name}={_callable_identity(tool.run)}" for tool in custom_tools),
+            plan_only=plan_only,
         )
         # Placeholder until bind(); eval() always binds before compat/rollout.
         self.info = PolicyInfo(name="agent", action_space=Box(shape=(1,)))
@@ -886,6 +900,7 @@ class LLMAgentPolicy(PolicyBase):
             images=self._images,
             pre_check=self._pre_check,
             tools=self._tools,
+            plan_only=self._plan_only,
         )
         self._toolset = toolset
         self._state_labels = toolset.state_labels()
@@ -915,6 +930,8 @@ class LLMAgentPolicy(PolicyBase):
             formatted += _CUSTOM_TOOLS_PROMPT_CLAUSE.format(
                 names=", ".join(tool.name for tool in self._tools)
             )
+        if self._plan_only and self._toolset is not None:
+            formatted += _PLAN_ONLY_PROMPT_CLAUSE.format(move=self._toolset.move_tool)
         docs = self._embodiment_docs
         if docs is not None and docs.strip():
             formatted = formatted + "\n\nEmbodiment notes:\n" + docs.strip()
@@ -1257,6 +1274,8 @@ class LLMAgentPolicy(PolicyBase):
                     result_text = "ignored: an earlier call in this turn failed"
                 elif call.name in toolset.custom_names:
                     result_text = f"ignored: call {call.name} before the motion or take_pic"
+                elif toolset.is_plan(call):
+                    result_text = "ignored: call plan_only before the motion or take_pic"
                 else:
                     result_text = "ignored: one tool call per turn"
 
