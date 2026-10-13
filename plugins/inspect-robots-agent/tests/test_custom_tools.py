@@ -206,9 +206,7 @@ def test_a_custom_call_after_the_motion_is_ignored() -> None:
     _, _, policy = _first_act(script, _double_tool(double))
 
     assert double.calls == []
-    assert _transcript_tool_messages(policy)[-1] == (
-        "ignored: call double before the motion or take_pic"
-    )
+    assert _transcript_tool_messages(policy)[-1] == ("ignored: the turn closed before double")
 
 
 def test_custom_calls_chain_before_take_pic_but_not_after() -> None:
@@ -223,9 +221,7 @@ def test_custom_calls_chain_before_take_pic_but_not_after() -> None:
     answer, captured = _tool_messages(before.requests[1])
     assert answer == "2x = 4"
     assert captured.startswith("captured")
-    assert _tool_messages(after.requests[1])[1] == (
-        "ignored: call double before the motion or take_pic"
-    )
+    assert _tool_messages(after.requests[1])[1] == ("ignored: the turn closed before double")
 
 
 def test_tool_errors_count_toward_the_failure_budget_and_successes_do_not_reset_it() -> None:
@@ -242,7 +238,7 @@ def test_tool_errors_count_toward_the_failure_budget_and_successes_do_not_reset_
 
 
 def test_a_custom_success_cannot_mask_a_failing_motion() -> None:
-    turn = _turn(("double", {"x": 2}), ("move_by", {"deltas": {"dx": 99.0}}))
+    turn = _turn(("double", {"x": 2}), ("move_by", {"deltas": {"nope": 1.0}}))
     with pytest.raises(RuntimeError, match="kept failing"):
         _first_act(_Script([turn]), _double_tool())
 
@@ -336,8 +332,8 @@ def test_prompt_clause_is_present_only_with_tools(images: str, template: str) ->
     assert without_transcript is not None and with_transcript is not None
     assert without_transcript[0]["content"] == expected
     assert with_transcript[0]["content"] == (
-        expected + " The tools double answer in text without moving the robot; call them "
-        "alone or before the motion call in the same turn."
+        expected + " The tools double answer in text without moving the robot; an error "
+        "from one fails the turn."
     )
 
 

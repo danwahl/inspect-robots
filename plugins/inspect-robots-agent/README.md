@@ -262,10 +262,12 @@ a generic exception into `PolicyError`, so the trial fails and
 the eval. A crashing or hard-vetoing adapter must fail visibly. Silently
 allowing the motion is never acceptable.
 
-**Retry budget:** A rejection is a normal tool error. Three rejected moves in
-a row raise a policy error instead of reaching `give_up`. Verify rig
-measurements such as `table_height` and base offsets so an over-conservative
-checker does not consume the budget.
+**Retry budget:** A rejection returns to the model as a tool error, but
+nothing reaches the robot, so it does not count toward the failure limit;
+neither does a motion refused by the action bounds or the playout cap. A
+checker that rejects every motion runs the trial to `max_llm_calls`, which
+ends in a forced `give_up`. Verify rig measurements such as `table_height` and
+base offsets so an over-conservative checker does not consume the budget.
 
 **Recorded identity:** Eval configuration records only the adapter code
 identity as `module.qualname`. Two runs using the same adapter with differently
@@ -420,8 +422,9 @@ the arguments as the model sent them and the observation the model is looking
 at, and returns the text the model reads as the tool result. The schema is
 shown to the model and not enforced, so `run` checks its own arguments.
 
-A custom call does not end the turn, so the model can ask a question and act
-on the answer in one message: `[locate_points, move_to]` runs both. A custom
+A custom call does not end the turn: `[locate_points, move_to]` in one
+message runs both, though the motion's arguments are written before the answer
+arrives. A custom
 call after the motion call, or after `take_pic`, is ignored. A turn of custom
 calls alone goes back to the model with the answers.
 
@@ -490,9 +493,9 @@ policy = LLMAgentPolicy(
 ```
 
 Raise `ToolError` to reject the arguments: the model reads the message and
-can correct the call. A rejection counts toward the same three-in-a-row
-failure budget as other tool errors, and a successful custom call does not
-reset it. Any other exception propagates and fails the trial, as does a
+can correct the call. A rejection fails the turn and counts toward the
+failure limit; a successful custom call does not reset the count. Any other
+exception propagates and fails the trial, as does a
 result that is not a string. Names follow `[a-zA-Z0-9_-]{1,64}`, and the
 built-in names are reserved whether or not that tool is bound. Keep schemas
 to the keywords the built-ins use (`type`, `properties`, `items`, `required`,

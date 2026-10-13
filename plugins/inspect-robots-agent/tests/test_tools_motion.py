@@ -130,6 +130,47 @@ def _execute_absolute(
     )
 
 
+@pytest.mark.parametrize(
+    ("targets", "refused"),
+    [
+        ({"joint": 0.9}, True),  # pre_check
+        ({"joint": 2.0}, True),  # bounds
+        ({"elbow": 0.1}, False),  # unknown dimension
+        ({"joint": "far"}, False),  # not a number
+        ({}, False),  # empty
+    ],
+)
+def test_only_a_well_formed_motion_is_marked_refused(
+    targets: dict[str, Any], refused: bool
+) -> None:
+    toolset = build_toolset(
+        _absolute_space(),
+        _absolute_obs_space(),
+        control_hz=10.0,
+        pre_check=lambda waypoints: "past 0.5" if waypoints[:, 0].max() > 0.5 else None,
+    )
+    result = toolset.execute(_call("move_joints", targets=targets), _obs())
+    assert result.error is not None and result.refused is refused
+
+
+@pytest.mark.parametrize(
+    ("deltas", "refused"),
+    [
+        ({"0": 99.0}, True),  # playout cap
+        ({"0": -0.01}, True),  # cannot move in that direction
+        ({"0": 5e-324, "1": 0.15}, True),  # too small to split
+        ({"dz": 0.01}, False),  # unknown dimension
+    ],
+)
+def test_only_a_well_formed_displacement_is_marked_refused(
+    deltas: dict[str, Any], refused: bool
+) -> None:
+    space = _delta_space(low=np.array([0.0, -0.1]))
+    toolset = build_toolset(space, ObservationSpace(), control_hz=10.0)
+    result = toolset.execute(_call("move_by", deltas=deltas), Observation())
+    assert result.error is not None and result.refused is refused
+
+
 # --- bind-time validation ------------------------------------------------------
 
 

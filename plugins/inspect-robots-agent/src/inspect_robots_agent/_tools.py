@@ -97,7 +97,9 @@ class ToolResult:
     policy should resolve every available camera, ``()`` means the observation
     had no images to show, and a non-empty tuple names the requested cameras.
     Motion targets are carried separately so their measured residual can be
-    reported after playout.
+    reported after playout. ``refused`` marks a well-formed motion that cannot
+    be emitted: outside the bounds, over the playout cap, too small to step, or
+    rejected by ``pre_check``.
     """
 
     chunk: ActionChunk | None = None
@@ -105,6 +107,7 @@ class ToolResult:
     note: str = ""
     capture: tuple[str, ...] | None = None
     target: npt.NDArray[np.float64] | None = None
+    refused: bool = False
 
 
 class Toolset:
@@ -504,8 +507,12 @@ class Toolset:
 
         if self._absolute:
             assert current is not None
-            return self._move_absolute(values, vector, named_indices, current)
-        return self._move_displacement(vector, named_indices)
+            result = self._move_absolute(values, vector, named_indices, current)
+        else:
+            result = self._move_displacement(vector, named_indices)
+        if result.error is None:
+            return result
+        return ToolResult(error=result.error, refused=True)
 
     def _move_absolute(
         self,

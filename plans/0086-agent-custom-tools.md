@@ -107,10 +107,9 @@ class ToolError(Exception):
 - In the turn loop, a successful result with no chunk leaves the turn open: a
   later motion call in the same message runs, and a turn of custom calls alone
   returns to the model. A custom call after the turn has closed, behind a
-  motion or `take_pic`, is answered "ignored: call {name} before the motion or
-  take_pic".
+  motion or `take_pic`, is answered "ignored: the turn closed before {name}".
 - A successful custom call does not reset the consecutive-failure count. If
-  it did, a model repeating `[custom, failing move]` would never reach the
+  it did, a model repeating `[custom, malformed move]` would never reach the
   limit and would spend the whole call budget. A turn of custom calls alone
   is bounded by `max_llm_calls`, which ends in a forced `give_up`.
 
@@ -120,8 +119,8 @@ When tools are given, both system prompt templates gain one clause, appended
 after the pre-check clause so the template text before it stays
 byte-identical:
 
-> The tools {names} answer in text without moving the robot; call them alone
-> or before the motion call in the same turn.
+> The tools {names} answer in text without moving the robot; an error from
+> one fails the turn.
 
 No change when none are given. Each tool's own description carries its
 semantics, as with the built-ins.

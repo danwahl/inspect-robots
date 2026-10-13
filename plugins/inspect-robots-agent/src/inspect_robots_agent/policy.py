@@ -143,7 +143,7 @@ this rig and task as you go: done and give_up will ask what you wish you had \
 known from the start. You have a budget of \
 {budget} LLM calls for the whole trial. """
     f"{_MAX_CONSECUTIVE_FAILURES} failed turns without a successful motion between them end "
-    "the trial; a turn fails on a tool error or a reply with no tool call."
+    "the trial; a turn fails on a malformed tool call or a reply with no tool call."
 )
 
 _ON_DEMAND_SYSTEM_TEMPLATE = (
@@ -168,8 +168,9 @@ to make. When the goal is achieved call done; if it cannot be achieved call \
 give_up. Note what you are learning about this rig and task as you go: done and \
 give_up will ask what you wish you had known from the start. You have a budget \
 of {budget} LLM calls for the whole trial. """
-    f"{_MAX_CONSECUTIVE_FAILURES} failed turns without a successful motion between them end "
-    "the trial; a turn fails on a tool error or a reply with no tool call."
+    f"{_MAX_CONSECUTIVE_FAILURES} failed turns without a successful motion or capture between "
+    "them end the trial; a turn fails on a malformed tool call, a second take_pic refusal for "
+    "the same observation, or a reply with no tool call."
 )
 
 _PRE_CHECK_PROMPT_CLAUSE = (
@@ -180,8 +181,7 @@ _PRE_CHECK_PROMPT_CLAUSE = (
 _TOOL_NAME = re.compile(r"[a-zA-Z0-9_-]{1,64}")
 
 _CUSTOM_TOOLS_PROMPT_CLAUSE = (
-    " The tools {names} answer in text without moving the robot; call them alone or "
-    "before the motion call in the same turn."
+    " The tools {names} answer in text without moving the robot; an error from one fails the turn."
 )
 
 _ON_DEMAND_NUDGE = (
@@ -1222,8 +1222,9 @@ class LLMAgentPolicy(PolicyBase):
                     else:
                         if result.error is not None:
                             result_text = result.error
-                            failures += 1
-                            last_error = result.error
+                            if not result.refused:
+                                failures += 1
+                                last_error = result.error
                             closed = True
                             closed_after_failure = True
                         else:
@@ -1264,7 +1265,7 @@ class LLMAgentPolicy(PolicyBase):
                 elif closed_after_failure:
                     result_text = "ignored: an earlier call in this turn failed"
                 elif call.name in toolset.custom_names:
-                    result_text = f"ignored: call {call.name} before the motion or take_pic"
+                    result_text = f"ignored: the turn closed before {call.name}"
                 else:
                     result_text = "ignored: one tool call per turn"
 

@@ -794,12 +794,20 @@ def test_system_prompts_announce_the_hindsight_question(template: str) -> None:
     assert announcement in rendered
 
 
-@pytest.mark.parametrize("template", [_SYSTEM_TEMPLATE, _ON_DEMAND_SYSTEM_TEMPLATE])
-def test_system_prompts_state_the_failure_limit(template: str) -> None:
-    assert template.endswith(
-        f" {_MAX_CONSECUTIVE_FAILURES} failed turns without a successful motion between them "
-        "end the trial; a turn fails on a tool error or a reply with no tool call."
-    )
+@pytest.mark.parametrize(
+    ("template", "fails"),
+    [
+        (_SYSTEM_TEMPLATE, "a malformed tool call or a reply with no tool call."),
+        (
+            _ON_DEMAND_SYSTEM_TEMPLATE,
+            "a malformed tool call, a second take_pic refusal for the same observation, or a "
+            "reply with no tool call.",
+        ),
+    ],
+)
+def test_system_prompts_state_the_failure_limit(template: str, fails: str) -> None:
+    assert template.endswith(f" end the trial; a turn fails on {fails}")
+    assert f" {_MAX_CONSECUTIVE_FAILURES} failed turns without a successful motion" in template
 
 
 def test_the_stated_failure_limit_is_the_enforced_one() -> None:
@@ -1684,7 +1692,8 @@ def test_pre_check_rejection_is_fed_back_and_corrected() -> None:
     )
 
 
-def test_persistent_pre_check_rejections_exhaust_the_failure_budget() -> None:
+def test_persistent_pre_check_rejections_run_to_the_call_budget() -> None:
+    """A refused motion is not a failed turn; the call budget ends the trial instead."""
     calls = 0
 
     def reject(waypoints: npt.NDArray[np.float64]) -> str | None:
@@ -1693,19 +1702,26 @@ def test_persistent_pre_check_rejections_exhaust_the_failure_budget() -> None:
         return "joint target enters the keep-out zone"
 
     script = _Script([_tool_response("move_joints", {"targets": {"joint": 0.5}})])
-    policy = _policy(script, pre_check=reject)
+    policy = _policy(script, pre_check=reject, max_llm_calls=5)
     policy.bind(_AbsoluteEmbodiment().info)
     policy.reset(Scene(id="s0", instruction="move safely"))
 
-    with pytest.raises(
-        RuntimeError,
-        match=(
-            "LLM tool calls kept failing; last error: pre-check rejected this motion: "
-            "joint target enters the keep-out zone"
-        ),
-    ):
+    chunk = policy.act(Observation(state={"q": np.array([0.0])}))
+    assert chunk.actions[0].meta.get("request_stop")
+    assert calls == len(script.requests) == 5
+
+
+def test_a_refused_motion_does_not_reset_the_failure_count() -> None:
+    malformed = _tool_response("move_joints", {"targets": {"elbow": 0.1}})
+    refused = _tool_response("move_joints", {"targets": {"joint": 0.5}})
+    script = _Script([malformed, refused, malformed, refused, malformed])
+    policy = _policy(script, pre_check=lambda waypoints: "keep-out zone")
+    policy.bind(_AbsoluteEmbodiment().info)
+    policy.reset(Scene(id="s0", instruction="move safely"))
+
+    with pytest.raises(RuntimeError, match="unknown dimension 'elbow'"):
         policy.act(Observation(state={"q": np.array([0.0])}))
-    assert calls == 3
+    assert len(script.requests) == 5
 
 
 def test_pre_check_exception_propagates_from_act_unchanged() -> None:
