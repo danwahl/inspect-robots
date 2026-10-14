@@ -16,7 +16,6 @@ import hashlib
 import json
 import math
 import os
-import re
 import sys
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -40,6 +39,7 @@ from inspect_robots.types import ActionChunk, Observation
 if TYPE_CHECKING:
     from inspect_robots.rollout import TrialRecord
 from inspect_robots_agent._anthropic import _DEFAULT_MAX_OUTPUT_TOKENS, AnthropicClient
+from inspect_robots_agent._custom_tools import CustomTool, validated_custom_tools
 from inspect_robots_agent._depth import depth_parts, resolve_depth
 from inspect_robots_agent._gemini_live import GeminiLiveClient
 from inspect_robots_agent._interactions import InteractionsClient
@@ -56,13 +56,7 @@ from inspect_robots_agent._llm import (
 )
 from inspect_robots_agent._png import png_data_url
 from inspect_robots_agent._responses import ResponsesClient
-from inspect_robots_agent._tools import (
-    BUILTIN_TOOL_NAMES,
-    CustomTool,
-    PreCheck,
-    Toolset,
-    build_toolset,
-)
+from inspect_robots_agent._tools import PreCheck, Toolset, build_toolset
 
 from ._capture import WireCapture, _safe
 
@@ -178,8 +172,6 @@ _PRE_CHECK_PROMPT_CLAUSE = (
     "rather than repeating a rejected move."
 )
 
-_TOOL_NAME = re.compile(r"[a-zA-Z0-9_-]{1,64}")
-
 _CUSTOM_TOOLS_PROMPT_CLAUSE = (
     " The tools {names} answer in text without moving the robot; an error from one fails the turn."
 )
@@ -197,42 +189,6 @@ def _callable_identity(hook: object) -> str:
         return f"{module}.{qualname}"
     hook_type = type(hook)
     return f"{getattr(hook_type, '__module__', None)}.{getattr(hook_type, '__qualname__', None)}"
-
-
-def _validated_tools(tools: object) -> tuple[CustomTool, ...]:
-    """Return the custom tools as a tuple, else raise a guided ``ConfigError``."""
-    if isinstance(tools, (str, bytes)) or not isinstance(tools, Sequence):
-        raise ConfigError(
-            f"tools must be a sequence of CustomTool, got {tools!r}.\n"
-            "fix: -P CLI flags cannot carry tools; pass them programmatically"
-        )
-    seen: set[str] = set()
-    for tool in tools:
-        if not isinstance(tool, CustomTool):
-            raise ConfigError(f"tools must contain CustomTool instances, got {tool!r}")
-        if not isinstance(tool.name, str) or not _TOOL_NAME.fullmatch(tool.name):
-            raise ConfigError(
-                f"custom tool name {tool.name!r} must match [a-zA-Z0-9_-]{{1,64}}, "
-                "the strictest provider rule"
-            )
-        if tool.name in BUILTIN_TOOL_NAMES:
-            raise ConfigError(
-                f"custom tool name {tool.name!r} is reserved for a built-in tool; "
-                f"reserved: {', '.join(sorted(BUILTIN_TOOL_NAMES))}"
-            )
-        if tool.name in seen:
-            raise ConfigError(f"custom tool name {tool.name!r} is given twice")
-        seen.add(tool.name)
-        if not isinstance(tool.parameters, dict) or tool.parameters.get("type") != "object":
-            raise ConfigError(
-                f"custom tool {tool.name!r} parameters must be a JSON Schema object "
-                '({"type": "object", ...})'
-            )
-        if not isinstance(tool.description, str):
-            raise ConfigError(f"custom tool {tool.name!r} description must be a string")
-        if not callable(tool.run):
-            raise ConfigError(f"custom tool {tool.name!r} run must be callable")
-    return tuple(tools)
 
 
 def _validated_effort(effort: object) -> str | float:
@@ -487,7 +443,7 @@ class LLMAgentPolicy(PolicyBase):
                 )
             pre_check_identity = _callable_identity(pre_check)
 
-        custom_tools = _validated_tools(tools)
+        custom_tools = validated_custom_tools(tools)
 
         if not np.isfinite(max_speed_frac) or max_speed_frac <= 0:
             raise ConfigError("max_speed_frac must be finite and > 0")
@@ -840,7 +796,7 @@ class LLMAgentPolicy(PolicyBase):
         self._image_horizon = resolved_image_horizon
         self._prior_learnings_text = prior_learnings_text
         self._pre_check = pre_check
-        self._tools = custom_tools
+        self._custom_tools = custom_tools
         self._explicit_base_url = bool(base_url)
         self._wire = wire
         self.config = AgentPolicyConfig(
@@ -893,7 +849,7 @@ class LLMAgentPolicy(PolicyBase):
             self._max_speed_frac,
             images=self._images,
             pre_check=self._pre_check,
-            tools=self._tools,
+            custom_tools=self._custom_tools,
         )
         self._toolset = toolset
         self._state_labels = toolset.state_labels()
@@ -919,9 +875,9 @@ class LLMAgentPolicy(PolicyBase):
         formatted = template.format(name=self._embodiment_name, budget=self._max_llm_calls)
         if self._pre_check is not None:
             formatted += _PRE_CHECK_PROMPT_CLAUSE
-        if self._tools:
+        if self._custom_tools:
             formatted += _CUSTOM_TOOLS_PROMPT_CLAUSE.format(
-                names=", ".join(tool.name for tool in self._tools)
+                names=", ".join(tool.name for tool in self._custom_tools)
             )
         docs = self._embodiment_docs
         if docs is not None and docs.strip():

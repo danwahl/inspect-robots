@@ -98,11 +98,13 @@ class ToolError(Exception):
 - `AgentPolicyConfig` gains `tools: tuple[str, ...]`, each entry
   `name=module.qualname` of `run`, derived as `pre_check`'s identity is (the
   two share `_callable_identity`).
-- `build_toolset(...)` and `Toolset` take the tools. `schemas()` appends one
-  function definition per tool after the built-ins. `execute()` checks that
-  the arguments are a JSON object, as for every call, and dispatches a custom
-  name to `_custom`, which calls `run` and returns `ToolResult(note=text)`, or
-  `ToolResult(error=...)` on `ToolError`. The "unknown tool" error lists the
+- `_custom_tools.py` holds the tool type, its error, the validation, the
+  schema and the run step. `build_toolset(...)` and `Toolset` take the tools
+  as `custom_tools`. `schemas()` appends one function definition per tool
+  after the built-ins. `execute()` checks that the arguments are a JSON
+  object, as for every call, and dispatches a custom name to
+  `_run_custom_tool`, which calls `run` and returns `ToolResult(note=text)`,
+  or `ToolResult(error=...)` on `ToolError`. The "unknown tool" error lists the
   custom names among the available tools.
 - In the turn loop, a successful result with no chunk leaves the turn open: a
   later motion call in the same message runs, and a turn of custom calls alone
@@ -177,10 +179,12 @@ inspect-robots/
     ├── README.md                              (custom tools section)
     ├── src/inspect_robots_agent/
     │   ├── __init__.py                        (CustomTool, ToolError exports)
-    │   ├── _tools.py                          (CustomTool, ToolError, BUILTIN_TOOL_NAMES,
-    │   │                                       schemas, dispatch, custom_names)
-    │   └── policy.py                          (tools kwarg and validation, config field,
-    │                                           prompt clause, ignored-call message)
+    │   ├── _custom_tools.py                   (CustomTool, ToolError, BUILTIN_TOOL_NAMES,
+    │   │                                       validation, schema, run)
+    │   ├── _tools.py                          (custom_tools kwarg, schemas, dispatch,
+    │   │                                       custom_names)
+    │   └── policy.py                          (tools kwarg, config field, prompt clause,
+    │                                           ignored-call message)
     └── tests/
         ├── test_custom_tools.py               (new tests per §5)
         └── test_package.py                    (exports)

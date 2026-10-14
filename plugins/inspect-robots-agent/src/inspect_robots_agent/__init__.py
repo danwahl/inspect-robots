@@ -26,6 +26,7 @@ from __future__ import annotations
 from importlib.metadata import version
 
 from inspect_robots_agent._anthropic import AnthropicClient
+from inspect_robots_agent._custom_tools import CustomTool, ToolError
 from inspect_robots_agent._gemini_live import GeminiLiveClient
 from inspect_robots_agent._interactions import InteractionsClient
 from inspect_robots_agent._llm import (
@@ -37,7 +38,6 @@ from inspect_robots_agent._llm import (
 )
 from inspect_robots_agent._png import encode_png, png_data_url
 from inspect_robots_agent._responses import ResponsesClient
-from inspect_robots_agent._tools import CustomTool, ToolError
 from inspect_robots_agent.policy import AgentPolicyConfig, LLMAgentPolicy, agent_policy
 
 __all__ = [
